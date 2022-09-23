@@ -1,0 +1,41 @@
+import re
+from ply import lex
+import pandas as pd
+
+df = pd.read_csv("deadframe.csv")
+
+states = (
+	('multilined', 'exclusive'),
+	('multilines', 'exclusive'),
+)
+
+#t = torch.Tensor()
+#type(t) 
+#t = torch.class('ClassA')
+#local t = torch.class('ClassA')
+
+
+def t_multistring(t):
+	r'"""'
+	t.lexer.begin('multilined')
+	t.lexer.begin_lexpos = t.lexer.lexpos
+	t.lexer.begin_lineno = t.lexer.lineno
+
+def t_error(t):
+	'Unexpected error - should fail hard'
+	print('Illegal character %s" % repr(t.value[0]))
+	
+#raise lex.LexError("Scanning error") forget about this line
+
+#use this instead
+#function rn.get_full_name()
+
+# 		if rn.lang_type == "asian" then
+ 			#return rn.last_name .. "" .. rn.first_name
+ 		#else
+ 		 	#return rn.first_name .. "" .. rn.last_name
+ 		#end
+#end
+
+#instead of lexer.linenon = 0
+#use df.assign()
