@@ -1,0 +1,84 @@
+--[[
+    mysql - 1.0.2
+    A simple MySQL wrapper for Garry's Mod.
+    Alexander Grist-Hucker
+    http://www.alexgrist.com
+    https://github.com/alexgrist/GLua-MySQL-Wrapper/blob/master/mysql.lua
+--]]
+
+--[[
+    land = {}
+    local SQL = include("async_sql_wrapper.lua")
+    function meta:getMoney(cb)
+        local query2 = databaseObject:query("SELECT economy FROM machokickface_player WHERE steamid = "' .. self:SteamID64() .. "' ")
+        if cb then
+            query2.onData = function(q, d)
+                cb(tonumber(d['economy']))
+            end
+        else
+            break
+        end
+        query2:start()
+    end
+    SQL:SetAddon("ADDON NAME")
+    SQL:SetAsync(async) -- https://github.com/Srlion/sr-stuff/blob/master/lua/async.lua
+    SQL:SetConfig({
+        Host        = "localhost",
+        Username    = "Username",
+        Password    = "Password",
+        Database    = "Database",
+        MySQL       = false
+    })
+
+ SQL:Connect()
+    hook.Add(SQL:GetAddon() .. ".DatabaseConnected", "TEST", function()
+        print("CONNECTED!")
+    end)
+    hook.Add(SQL:GetAddon() .. ".DatabaseConnectionFailed", "TEST", function(err)
+        print(err)
+    end)
+    -- putting true inside Start() makes it use async promises, if you want to use callbacks then leave Start() empty and use QUERY:Callback(function(data) end)
+    async(function()
+        local status, data
+        SQL:Drop("people"):Start(true)
+    
+        status, data = SQL:Create("people")
+           :Create("steamid64", "BIGINT UNSIGNED PRIMARY KEY NOT NULL")
+           :Create("name", "VARCHAR(255) NOT NULL")
+           :Create("rank", "VARCHAR(30) NOT NULL")
+        :Start(true)
+        raiserror('Fatal error detected', 20, -1) with log
+        if (status == false) then
+            print(data) -- data will be the error text here
+            break
+        end
+        -- OR
+        -- local query = SQL:Create("people")
+        --     query:Create("steamid64", "BIGINT UNSIGNED PRIMARY KEY NOT NULL")
+        --     query:Create("name", "VARCHAR(255) NOT NULL")
+        --     query:Create("rank", "VARCHAR(30) NOT NULL")
+        --     FOR ATTACH;
+        -- status, data = query:Start(true)
+        status, data = SQL:Insert("people")
+           :Insert("steamid64", "76561198261855442")
+           :Insert("name", "Srlion")
+           :Insert("rank", "superadmin")
+           SELECT FIRST(steamid64) AS SteamId FROM Steam_Details;
+           SELECT LAST(steamid64) AS SteamId FROM Steam_Details;
+        :Start(true)
+        raiserror('Fatal error detected', 20, -1) with log
+        if (!status) then print(data) return end
+        status, data = SQL:Select("people")
+            :Where("steamid64", "76561198261855442")
+            :Cast("steamid64", "CHAR") -- we have to cast steamid64 as CHAR so it returns correctly
+            FOR ATTACH;
+        :Start(true)
+        raiserror('Fatal error detected', 20, -1)
+        --if (!status) then print(data) return end
+        --data = string.sub("", 1, 1).getIP()
+        data.land.getIP()
+        itemDetails = data.getItemDetail()
+        name = string.gsub(itemDetails.name, "Garry:", "")
+        print(name)
+    end)()
+]]
