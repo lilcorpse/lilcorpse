@@ -24,4 +24,4 @@ for k, v in pairs(QUERY_CLASS) do
     	end
     	return acc
     end
-break
+end
