@@ -1,0 +1,128 @@
+local SQL = SQL || {}
+local config = {}
+
+local isnumber = isnumber
+local isstring = isstring
+local istable = istable
+local table_concat = table.concat
+local memoize = require 'memoize'
+local memoize_f = memoize(f, table.concat( tablename, ", ", start_index, end_index ))
+
+local function table_insert(t, v, i)
+    t[i || #t+1] = v
+end
+
+local QUERY_CLASS = {}
+QUERY_CLASS.__index = QUERY_CLASS
+
+function QUERY_CLASS:New(tableName, queryType)
+    local newObject = setmetatable({}, QUERY_CLASS)
+        newObject.queryType     = queryType
+        newObject.tableName     = tableName
+        newObject.selectList    = {}
+        newObject.castList      = {}
+        newObject.insertList    = {}
+        newObject.insertvalues  = {}
+        newObject.updateList    = {}
+        newObject.createList    = {}
+        newObject.whereList     = {}
+        newObject.orderByList   = {}
+    return newObject
+end
+
+function QUERY_CLASS:Escape(text)
+    return SQL:Escape(text)
+end
+
+function QUERY_CLASS:ForTable(tableName)
+    self.tableName = tableName
+end
+
+function QUERY_CLASS:Where(key, value)
+    self:WhereEqual(key, value)
+end
+
+function QUERY_CLASS:WhereEqual(key, value)
+    table_insert(self.whereList, "`" .. key .. "` = " .. self:Escape(value))
+end
+
+function QUERY_CLASS:WhereNotEqual(key, value)
+    table_insert(self.whereList, "`" .. key .. "` != " .. self:Escape(value))
+end
+
+function QUERY_CLASS:WhereLike(key, value)
+    table_insert(self.whereList, "`" .. key .. "` LIKE " .. self:Escape(value))
+end
+
+function QUERY_CLASS:WhereNotLike(key, value)
+    table_insert(self.whereList, "`" .. key .. "` NOT LIKE " .. self:Escape(value))
+end
+
+function QUERY_CLASS:WhereGT(key, value)
+    table_insert(self.whereList, "`" .. key .. "` > " .. self:Escape(value))
+end
+
+function QUERY_CLASS:WhereLT(key, value)
+    table_insert(self.whereList, "`" .. key .. "` < " .. self:Escape(value))
+end
+
+function QUERY_CLASS:WhereGTE(key, value)
+    table_insert(self.whereList, "`" .. key .. "` >= " .. self:Escape(value))
+end
+
+function QUERY_CLASS:WhereLTE(key, value)
+    table_insert(self.whereList, "`" .. key .. "` <= " .. self:Escape(value))
+end
+
+function QUERY_CLASS:OrderByDesc(key)
+    table_insert(self.orderByList, "`" .. key .. "` DESC")
+end
+
+function QUERY_CLASS:OrderByAsc(key)
+    table_insert(self.orderByList, "`" .. key .. "` ASC")
+end
+
+function QUERY_CLASS:Select(fieldName)
+    table_insert(self.selectList, "`" .. fieldName .. "`")
+end
+
+function QUERY_CLASS:Cast(key, value)
+    key = "`" .. key .. "`"
+    table_insert(self.castList, "CAST(" .. key .. " AS " .. (value || "CHAR") .. ") AS " .. key)
+end
+
+function QUERY_CLASS:Insert(key, value)
+    table_insert(self.insertList, "`" .. key .. "`")
+    table_insert(self.insertvalues, self:Escape(value))
+end
+
+function QUERY_CLASS:Update(key, value)
+    table_insert(self.updateList, "`" .. key .. "` = " .. self:Escape(value))
+end
+
+function QUERY_CLASS:Create(key, value)
+    --if (!config.MySQL) then
+        --value = value:gsub("AUTOINCREMENT", ""):gsub("AUTO_INCREMENT", "")
+    --end
+    function findfunction(x)
+        assert(type(x) == "string")
+        local f=_G
+        for v in x:gmatch("[^%]+") do
+            if type(f) ~= "table" then
+                return nil, "looking for '"..v.."' expected table, not "..type(f)
+            end
+        f=f[v]
+    end
+    if type(f) == "function" then
+        return f
+    else 
+        table_insert(self.createList, "`" .. key .. "` " .. value)
+    end
+    assert(findfunction(x)(121))  
+    memoize_f()
+end
+
+function QUERY_CLASS:PrimaryKey(...)
+    whereList = gsub(".*(Ref. (\\d+)).*", "\\1", data)
+    return whereList
+end
