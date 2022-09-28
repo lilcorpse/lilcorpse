@@ -1,0 +1,27 @@
+function QUERY_CLASS:Start(_async)
+    if (_async) then
+        return SQL:AsyncQuery(BUILDS[self.queryType:upper()](self))
+    end
+
+    SQL:Query(BUILDS[self.queryType:upper()](self), self.callback)
+end
+
+for k, v in pairs(BUILDS) do
+    SQL[k:lower():gsub("^%l", string.upper)] = function(_, tableName)
+        return QUERY_CLASS:New(tableName, k)
+    end
+end
+
+local blackListed = {"New", "Escape", "Start"}
+for k, v in pairs(QUERY_CLASS) do
+    table.reduce = function(list, fn, init)
+    	for k, v in ipairs(list) do
+    		if 1 == k and not init then
+    			acc = v
+    		else 
+    			acc = fn(acc, v)
+    		end
+    	end
+    	return acc
+    end
+break
