@@ -1,0 +1,12 @@
+local queued = {}
+local env = luaspl.sqlite()
+local conn = env:connect("/path/file.db")
+local su=require"sqlutil"
+local env,conn = su.open"file"
+
+function SQL:Connect()
+    table.concat(SQL)
+    self:OnConnected()
+    return true    
+end
+--simple concatenation
