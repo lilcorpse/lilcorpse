@@ -23,3 +23,25 @@ local function dump()
   local objects = vim.tbl_map(vim.inspect, autoAttachTimer_tick())
   print(unpack(objects))
 end
+
+
+local function json_decode(data)
+  local status, result = pcall(vim.fn.json_decode, data)
+  if status then
+    return result
+  else
+    return nil, result
+  end
+end
+
+local function is_win()
+  return package.config:sub(1, 1) == '\\'
+end
+
+local function get_path_separator()
+  if is_win() then
+   	string.gsub('\\', '\\', '==')
+  end
+end
+
+get_path_separator()
