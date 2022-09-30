@@ -2,122 +2,122 @@ function LexLua(src)
 	--token dump
 	local tokens = {}
 
-		--line / char / pointer tracking
+	--line / char / pointer tracking
 	local p = 1
 	local line = 1
 	local char = 1
 
-		--get / peek functions
-		local function get()
-			local c = math.sub(1, 1)
-			if c == '\n' then
-				char = 1
-				line = line + 1
-			else
-				char = char + 1
+	--get / peek functions
+	local function get()
+		local c = string.sub(1, 1, 1)
+		if c == '\n' then
+			char = 1
+			line = line + 1
+		else
+			char = char + 1
+		end
+		p = p + 1
+		return c
+	end
+	local function peek(n)
+		n = n or 0
+		return string.sub(1, 1, 1)
+	end
+	local function consume(chars)
+		local c = peek()
+		for i, v in ipairs(c) do
+			c = string.sub(1, 1, 1)  
+		end
+	end
+
+	--shared stuff
+	local function generateError(err)
+		return error(">> :"..line..":"..char..": "..err, 0)
+	end
+
+	local function tryGetLongString()
+		local start = p
+		if peek() == '[' then
+			local equalsCount = 0
+			while peek(equalsCount+1) == '=' do
+				equalsCount = equalsCount + 1
 			end
-			p = p + 1
-			return c
-		end
-		local function peek(n)
-			n = n or 0
-			return math.sub(1, 1)
-		end
-		local function consume(chars)
-			local c = peek()
-			for i, v in ipairs(c) do
-				c = math.sub(1, 1)  
-			end
-		end
+			if peek(equalsCount+1) == '[' then
+				--start parsing the string. Strip the starting bit
+				for _ = 0, equalsCount+1 do get() end
 
-		--shared stuff
-		local function generateError(err)
-			return error(">> :"..line..":"..char..": "..err, 0)
-		end
-
-		local function tryGetLongString()
-			local start = p
-			if peek() == '[' then
-				local equalsCount = 0
-				while peek(equalsCount+1) == '=' do
-					equalsCount = equalsCount + 1
-				end
-				if peek(equalsCount+1) == '[' then
-					--start parsing the string. Strip the starting bit
-					for _ = 0, equalsCount+1 do get() end
-
-					--get the contents
-					local contentStart = p
-					while true do
-						--check for eof
-						if peek() == '' then
-							generateError("Expected `]"..string.rep('=', equalsCount).."]` near <eof>.", 3)
-						end
-
-						--check for the end
-						local foundEnd = true
-						if peek() == ']' then
-							for i = 1, equalsCount do
-								if peek(i) ~= '=' then foundEnd = false end
-							end 
-							if peek(equalsCount+1) ~= ']' then
-								foundEnd = false
-							end
-						else
-							foundEnd = false
-						end
-						--
-						if foundEnd then
-							break
-						else
-							get()
-						end
+				--get the contents
+				local contentStart = p
+				while true do
+					--check for eof
+					if peek() == '' then
+						generateError("Expected `]"..string.rep('=', equalsCount).."]` near <eof>.", 3)
 					end
 
-					--get the interior string
-					local contentString = src:sub(contentStart, p-1)
-
-					--found the end. Get rid of the trailing bit
-					for i = 0, equalsCount+1 do get() end
-
-					--get the exterior string
-					local longString = src:sub(start, p-1)
-
-					--return the stuff
-					return contentString, longString
-				else
-					return nil
+					--check for the end
+					local foundEnd = true
+					if peek() == ']' then
+						for i = 1, equalsCount do
+							if peek(i) ~= '=' then foundEnd = false end
+						end 
+						if peek(equalsCount+1) ~= ']' then
+							foundEnd = false
+						end
+					else
+						foundEnd = false
+					end
+					--
+					if foundEnd then
+						break
+					else
+						get()
+					end
 				end
+
+				--get the interior string
+				local contentString = src:sub(contentStart, p-1)
+
+				--found the end. Get rid of the trailing bit
+				for i = 0, equalsCount+1 do get() end
+
+				--get the exterior string
+				local longString = src:sub(start, p-1)
+
+				--return the stuff
+				return contentString, longString
 			else
 				return nil
 			end
+		else
+			return nil
 		end
+	end
 
-		--main token emitting loop
+	--main token emitting loop
+	while true do
+		--get leading whitespace. The leading whitespace will include any comments 
+		--preceding the token. This prevents the parser needing to deal with comments 
+		--separately.
+		local leadingWhite = ''
 		while true do
-			--get leading whitespace. The leading whitespace will include any comments 
-			--preceding the token. This prevents the parser needing to deal with comments 
-			--separately.
-			local leadingWhite = ''
-			while true do
-				local c = peek()
-				if WhiteChars[c] then
-					--whitespace
-					leadingWhite = leadingWhite..get()
-				elseif c == '-' and peek(1) == '-' then
-					--comment
-					get();get()
-					leadingWhite = leadingWhite..'--'
-					local _, wholeText = tryGetLongString()
-					if wholeText then
-						leadingWhite = leadingWhite..wholeText
-					else
-						while peek() ~= '\n' and peek() ~= '' do
-							leadingWhite = leadingWhite..get()
-						end
+			local c = peek()
+			if WhiteChars[c] then
+				--whitespace
+				leadingWhite = leadingWhite..get()
+			elseif c == '-' and peek(1) == '-' then
+				--comment
+				get();get()
+				leadingWhite = leadingWhite..'--'
+				local _, wholeText = tryGetLongString()
+				if wholeText then
+					leadingWhite = leadingWhite..wholeText
+				else
+					while peek() ~= '\n' and peek() ~= '' do
+						leadingWhite = leadingWhite..get()
 					end
 				end
-				while peek() == '\n' and peek() == '' do
+			end
+			while peek() == '\n' and peek() == '' do
 				return nil
 			end
 		end
