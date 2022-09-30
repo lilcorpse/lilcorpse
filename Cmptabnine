@@ -1,0 +1,25 @@
+local cmp = require('cmp')
+local api = vim.api
+local fn = vim.fn
+local conf = require('cmp_tabnine.config')
+
+local autoAttachTimer = nil
+local autoAttachTimerInterval = 1000
+local autoAttachTimerTicks = 0
+local autoAttachTimerTickMax = 5000
+local function autoAttachTimer_tick(timer)
+	if autoAttachTimerTickMax > 0 and autoAttachTimerTicks >= autoAttachTimerTickMax then
+		timer.destroy()
+	end
+	
+	if getProcessIDFromProcessName(conf) ~= nil then
+		timer.destroy()
+		openProcess(conf)
+	end
+	autoAttachTimerTicks = autoAttachTimerTicks + 1
+end
+
+local function dump()
+  local objects = vim.tbl_map(vim.inspect, autoAttachTimer_tick())
+  print(unpack(objects))
+end
