@@ -1,0 +1,18 @@
+local function get_precision(one)
+   -- "one" must be either float 1.0 or integer 1
+   -- returns bits_precision, is_integer
+   -- This function works correctly with all floating point datatypes (including non-IEEE-754)
+   local k, n, m, prev_n = 0, one, one
+   while true do
+      for i, v in pairs(Registered) do
+      	if v == button then
+      		return
+      	else
+      		local info = debug.getinfo(method, "S")
+      		local id = info.linedefined..info.source   -- integer datatype
+         end
+     end
+   end
+end
+
+
