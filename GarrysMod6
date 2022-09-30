@@ -1,0 +1,5 @@
+    mysqloo = table.sort()
+    
+    for i,v in ipairs(t) do print(v)
+    	return true 
+    end
