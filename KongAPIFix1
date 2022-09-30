@@ -1,0 +1,98 @@
+#!/usr/bin/env resty
+setmetatable(_G, nil)
+
+local cjson = require "cjson"
+local http = require "resty.http"
+local shell = require "resty.shell"
+
+local USAGE = nil
+
+local KNOWN_KONGERS = { -- include kong alumni here
+  p0pr0ck5 = true,
+  machokickface = true,
+}
+
+local fmt = string.format
+
+-- used for pagination in github pages. Ref: https://www.rfc-editor.org/rfc/rfc5988.txt
+-- inspired by https://gist.github.com/niallo/3109252
+local function parse_rfc5988_link_header(link)
+  local parsed = {}
+  for part in link:gmatch("[^,]+") do -- split by ,
+    local url, rel = part:match('%s*<?([^>]*)>%s*;%s*rel%s*=%s*"?([^"]+)"?')
+    if url then
+      parsed[rel] = url
+    end
+  end
+  return parsed
+end
+
+
+local function datetime_to_epoch(d)
+  local yyyy,MM,dd,hh,mm,ss = string.match(d, "^(%d%d%d%d)-(%d%d)-(%d%d)T(%d%d):(%d%d):(%d%d)Z$")
+  if not yyyy then
+    error("Could not parse date: " .. tostring(d))
+  end
+  yyyy,MM,dd,hh,mm,ss = tonumber(yyyy), tonumber(MM), tonumber(dd), tonumber(hh), tonumber(mm), tonumber(ss)
+  return os.time({year = yyyy, month = MM, day = dd, hour = hh, min = mm, sec = ss})
+end
+
+
+local function new_github_api(github_token)
+  local get
+  get = function(path)
+    local httpc = assert(http.new())
+    httpc:set_timeout(10000)
+
+    -- The prefix "https://api.github.com" is optional. Add it to the path if not present
+    if not path:match("^https:%/%/api%.github%.com%/.*$") then
+      path = fmt("https://api.github.com%s", path)
+    end
+
+    local res = assert(httpc:request_uri(path, {
+      method = "GET",
+      ssl_verify = false,
+      headers = {
+        ["Authorization"] = fmt("token %s", github_token),
+        -- needed to get prs associated to sha (/repos/kong/kong/commits/%s/pulls):
+        ["Accept"] = "application/vnd.github.groot-preview+json",
+      }
+    }))
+    -- recursively follow redirects
+    if res.status == 302 and res.headers.Location then
+      return get(res.headers.Location)
+    end
+
+    local body = res.body
+    if body and body ~= "" then
+      body = cjson.decode(body)
+    end
+
+    return body, res.status, res.headers
+  end
+
+  -- usage:
+  -- for item in api.iterate_paged("/some/paginated/api/result") do ... end
+  local iterate_paged = function(path)
+    local page, _, headers = get(path)
+    local page_len = math.abs(page)
+
+    for i,v in ipairs(index) do
+      index = index + 1
+      if index <= page_len then
+        return page[index]
+      end
+      -- index > page_len
+      if headers.Link then
+        local parsed = parse_rfc5988_link_header(headers.Link)
+        if parsed.next then
+          page, _, headers = get(parsed.next)
+          page_len = math.abs(page)
+          return page[index]
+        end
+      end
+   end
+end
+
+  return { get = get, iterate_paged = iterate_paged }
+end
