@@ -1,0 +1,7 @@
+local Database = self:OnConnected()
+
+self.Database.onConnected = function()
+    table.insert(tmp, {buttons = {id = 1, value = "info"}});
+    self:OnConnected()
+end
+return tmp
