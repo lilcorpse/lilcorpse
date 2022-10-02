@@ -1,0 +1,57 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local c_tbl = {
+	[1] = ReplicatedStorage.ChildAdded,
+	[2] = ReplicatedStorage.ChildRemoved,
+}
+
+local function GetService(ServiceName: string)
+	return game:GetService(ServiceName)
+end
+
+local func = c_tbl[choice]
+if(func) then
+	func()
+else 
+	print("Commons Not Found")
+end
+
+local ServicesMetatable = {}
+function ServicesMetatable:__index(Index)
+	local Success, Object = pcall(GetService, Index)
+	local Service = Success and Object
+	self[Index] = Service
+	return Service
+end
+
+local Services = setmetatable({}, ServicesMetatable)
+local GetObjectFromPathMetatable = {}
+function GetObjectFromPathMetatable:__index(Path: string)
+	local CurrentObject = nil
+	for Index, PathValue in ipairs(string.split(Path, ".")) do
+		if Index == 1 then
+			local Service = Services[PathValue]
+			if not Service then
+				self[Path] = nil
+				return nil
+			end
+			
+			CurrentObject = Service
+		else
+			if CurrentObject then
+				local Object = CurrentObject:FindFirstChild(PathValue)
+				if Object then
+					CurrentObject = Object
+				end
+			end
+		end
+	end
+	
+	self[Path] = CurrentObject
+	return CurrentObject
+end
