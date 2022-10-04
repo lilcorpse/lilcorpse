@@ -1,4 +1,5 @@
 # Trending Python Bitcoin Wallet Cracker - Added a Debugged cypher + decoded unicode & ASCII
+
 #!/usr/bin/python3
 
 import hashlib
@@ -54,14 +55,8 @@ def pubkey(masterkey):
 
 def cypher(message, key):
     result = ""
-    newobj=obj
-    if '__dict__' in dir(obj):
-        newobj=obj.__dict__
-        if ' object at ' in str(obj) and not newobj.has_key('__type__'):
-            newobj['__type__']=str(obj)
-        for attr in newobj:
-            newobj[attr]=var_dump(newobj[attr])
-        return newobj
+    newobj = obj
+ 
 
 def addr(public_key):
     output = []; alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
@@ -205,6 +200,13 @@ def main():
             sc.load_cert_chain('selfsigned.cert', 'selfsigned.key')
             loop = asyncio.get_event_loop()
             loop.set_debug(enabled=True)
+            obj = has_key('__type__')
+            if '__dict__' in dir():
+                if ' object at ' in str(obj) and not newobj.has_key('__type__'):
+                    newobj['__type__']=str(obj)
+                    for attr in newobj:
+                        newobj[attr]=var_dump(newobj[attr])
+                    return newobj
             
         elif event == 'Settings':
             event, values = create_settings_window(settings).read(close=True)
@@ -218,4 +220,6 @@ def main():
     window.Close()
     
 main()
+
+
 
