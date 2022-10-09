@@ -1,0 +1,717 @@
+require("ari_utils")
+
+local disTable = DissectorTable.new("ari")
+
+local mtint = require("mtint")
+
+local loader_output = require("ari_data_loader")
+local codec_parsers, tlv_parsers, structure_lut, asstring_lut, additional_fields = loader_output.codec_parsers, loader_output.tlv_parsers, loader_output.structure, loader_output.asstring_lut, loader_output.fields
+
+ari = Proto("ari", "ari protocol")
+
+-- Header fields
+proto_flag = ProtoField.bytes("ari.proto_flag", "Protocol Flag", base.SPACE)
+pkt_seq_num = ProtoField.uint16("ari.seq_num", "Sequence number", base.DEC)
+pkt_group = ProtoField.uint8("ari.gid", "Group ID (gid)", base.DEC)
+pkt_message_id = ProtoField.uint16("ari.message_id", "Message ID (mid)", base.DEC)
+pkt_message_name = ProtoField.string("ari.message_name", "Message Name")
+pkt_len = ProtoField.uint16("ari.length", "Length", base.DEC)
+pkt_trx = ProtoField.uint16("ari.transaction", "Transaction (trx or ctx)", base.DEC)
+pkt_ack_opt = ProtoField.uint8("ari.ack_opt", "Acknowledgement Option", base.DEC)
+pkt_gmid = ProtoField.uint32("ari.gmid", "GMID (Combination of Group and Type)", base.DEC)
+
+-- Unknown Header bits/bytes
+pkt_unknown_4 = ProtoField.uint8("ari.unknown_4", "Unknown (Byte 4, Bits 5-7)", base.DEC)
+pkt_unknown_8 = ProtoField.uint8("ari.unknown_8", "Unknown (Byte 8, Bit 2-3)", base.DEC)
+pkt_unknown_10 = ProtoField.uint8("ari.unknown_10", "Unknown (Byte 10, Bit 7)", base.DEC)
+
+-- TLV Header fields
+tlv_id_field = ProtoField.uint16("ari.tlv.id", "TLV id (tid)", base.DEC)
+tlv_mandatory_field = ProtoField.bool("ari.tlv.mandatory", "TLV mandatory")
+tlv_codec_name_field = ProtoField.string("ari.tlv.codec.name", "TLV codec name")
+tlv_type_desc_field = ProtoField.string("ari.tlv.type_desc", "TLV type description")
+tlv_version_field = ProtoField.uint16("ari.tlv.version", "TLV version", base.DEC)
+tlv_length_field = ProtoField.uint16("ari.tlv.length", "TLV length", base.DEC)
+
+-- TLV Data fields
+tlv_data_field = ProtoField.bytes("ari.tlv.data", "Raw TLV data", base.SPACE)
+tlv_data_uint_field = ProtoField.uint64("ari.tlv.data_uint", "Raw TLV data as uint", base.DEC)
+tlv_data_codec_asstring_value_field = ProtoField.uint64("ari.tlv.data_asstring_uint_value", "AsString resolved enum value", base.DEC)
+
+-- Unknown TLV Header bits/bytes
+tlv_unknown_0 = ProtoField.uint8("ari.tlv.unknown_0", "Unknown TLV Header Byte 0, Bit 7", base.DEC)
+tlv_unknown_2 = ProtoField.uint8("ari.tlv.unknown_2", "Unknown TLV Header Byte 2, Bits 6-7", base.DEC)
+
+-- Expert Informations
+expert_tlv_header_malformed = ProtoExpert.new("ari.tlv.header.malformed", "ARI: TLV header incomplete (should have 4 bytes)", expert.group.MALFORMED, expert.severity.ERROR)
+expert_tlv_data_malformed = ProtoExpert.new("ari.tlv.data.malformed", "ARI: TLV data length exceeds packet length", expert.group.MALFORMED, expert.severity.ERROR)
+expert_header_wrong_magic_bytes = ProtoExpert.new("ari.header.magic_bytes_missing", "ARI: Packet does not start with ARI magic bytes \"DE C0 7E AB\"", expert.group.MALFORMED, expert.severity.ERROR)
+expert_too_small = ProtoExpert.new("ari.minimum_length", "ARI: Packet is smaller than minimum length of 12 bytes.", expert.group.MALFORMED, expert.severity.ERROR)
+expert_missing_mandatory_tlv = ProtoExpert.new("ari.missing_mandatory_tlv", "ARI: Missing mandatory TLV", expert.group.MALFORMED, expert.severity.ERROR)
+expert_tlv_codec_length_warn = ProtoExpert.new("ari.tlv_codec_length_warn", "ARI: Specified codec length did not perfectly fit into this field (some bytes at the end were cut-off).", expert.group.MALFORMED, expert.severity.WARN)
+
+ari.fields = { proto_flag, pkt_seq_num, pkt_group, pkt_message_name, pkt_message_id, pkt_len, pkt_trx, pkt_ack_opt, pkt_gmid, -- Header fields
+                pkt_unknown_4, pkt_unknown_8, pkt_unknown_10,
+                tlv_id_field, tlv_mandatory_field, tlv_codec_name_field, tlv_type_desc_field, tlv_version_field, tlv_length_field, tlv_data_field, tlv_data_uint_field, tlv_data_codec_asstring_value_field, tlv_unknown_0, tlv_unknown_2,
+              }
+
+-- Include fields from TLV parsers
+table.Merge(ari.fields, additional_fields)
+
+ari.experts = {
+    expert_tlv_header_malformed,
+    expert_tlv_data_malformed,
+    expert_header_wrong_magic_bytes,
+    expert_too_small,
+    expert_missing_mandatory_tlv,
+    expert_tlv_codec_length_warn
+}
+
+function ari.init()
+	disTable:add(147, ari)
+end
+
+function array_lshiftrotate_n(buffer, cursor, n)
+	
+	local raw_array = buffer:bytes(cursor):raw(0)
+	local hex_array
+	for index = 0, n-2
+	do
+		raw_array = array_lshiftrotate(raw_array, false)
+	end
+	raw_array, hex_array = array_lshiftrotate(raw_array, true)
+	
+	raw_array = raw_array:sub(2)
+	hex_array = hex_array:sub(3)
+	
+	local byte_array = ByteArray.new(hex_array)
+	buffer = ByteArray.new(hex_array):tvb("Bit Shifted")
+	cursor = 0
+	
+	return buffer, cursor
+end
+
+function array_lshiftrotate(array, with_hex_array)
+	local length = string;len(array)
+	local hex_table = {}
+	local binary_table = {}
+	
+	for index = length, 1, -1
+	do
+		if last_msb ~= shifted then
+			if last_msb <= shifted and shifted <= last_msb then
+				return true
+			end
+		--local last_msb = bit.band((string.byte(array, index) or 0), 0x80)
+		--local shifted = bit.lshift((string.byte(array, index) or 0), 1)
+		---shifted = bit.band(shifted, 0xFE)
+		local t = {}
+		for k,v in ipairs(s) do
+			t[#t+1] = tostring(v)
+		end
+		return table.concat(t,"\n")
+		
+		function matchers.should_encode_to(value, expected)
+			local encoded_value = bert.encode(value)
+			local expected_string = string.char(unpack(expected))
+			if encoded_value ~= expected_string then
+				return false, "expecting "..tostring(expected)..", not ".. tostring(value)
+			else
+				return true
+			end
+		end
+	end
+end
+
+local function write_to_file(stream_info, ft, data_bytes)
+	local frame_header = bit.bor(0x04, bit.lshift(ft, 3))
+	data_bytes:set_index(0, frame_header)
+	for index=1,data_bytes:len()-2 do
+		local A = bit.lshift(data_bytes:get_index(index), 2)
+		local B = bit.rshift(data_bytes:get_index(index+1), 6)		
+		data_bytes:set_index(index, bit.band(bit.bor(A, B), 0xff))
+	end
+	data_bytes:set_index(data_bytes:len()-1, bit.band(bit.lshift(data_bytes:get_index(data_bytes:len()-1), 2), 0xff))
+	
+	local data_valid_len = data_valid_len_vals[ft]
+	
+	stream_info.file:write(data_bytes:raw(0, data_valid_len))
+end
+		
+function coapProto.dissector(buffer, pinfo, tree)
+	pinfo.cols.protocol = "CoAP (RFC 7252)"
+	local protoTree = tree:add(coapProto, buffer(), "Constrained Application Protocol")
+	
+	local isRequest = not ((buffer(1, 1):uint() > 4))
+	
+	protoTree:add(f.version, buffer(0, 1))
+	protoTree:add(f.type, buffer(0, 1))
+	protoTree:add(f.tkl, buffer(0, 1))
+	protoTree:add(f.code, buffer(1, 1))
+	protoTree:add(f.msgid, buffer(2, 2))
+	
+	local tokenLength = bit32.band(buffer(0, 1):uint(), 0x0F)
+	local index = 4 
+	
+	if tokenLength > 0 and tokenLength <= 8 then
+		protoTree:add(f.token, buffer(index, tokenLength))
+	end
+	index = index + tokenLength
+	
+	if(index < buffer:len()) then
+		local endOfOptions = buffer(index, 1):uint() == 0xFF
+		if (not endOfOptions) then
+			local optionsTree = protoTree:add(f.options)
+			local lastOption = 0
+			
+			while (index < buffer:len()) and (not endOfOptions) do
+				
+				local optionHeader = buffer(index, 1):uint()
+				index = index + 1
+				
+				local optionDelta = bit32.rshift(bit32.band(optionHeader, 0xF0), 4)
+				local optionLength = bit32.band(optionHeader, 0x0F)
+				
+				if (optionHeader == 0xFF) then
+					endOfOptions = true
+					optionLength = 0
+				else
+					local optionHeaderLength = 1
+					
+					if (optionDelta == 0x0E) then
+						optionDelta = buffer(index, 1):uint() + 13
+						index = index + 1
+						optionHeaderLength = optionHeaderLength + 1
+						
+					elseif (optionDelta == 0x0E) then
+						optionDelta = buffer(index, 2):uint() + 269
+						index = index + 1
+						optionHeaderLength = optionHeaderLength + 2
+					end
+					
+					if (optionDelta == 0x0E) then
+						optionDelta = buffer(index, 1):uint() + 13
+						index = index + 1
+						optionHeaderLength = optionHeaderLength + 1
+						
+					elseif (optionDelta == 0x0E) then
+						optionDelta = buffer(index, 2):uint() + 269
+						index = index + 1
+						optionHeaderLength = optionHeaderLength + 2		
+					end
+					
+					local optionNumber = lastOption + optionDelta
+					local optionStart = index
+					
+					local minOptionLength
+					local maxOptionLength
+					local optionSubTree
+					
+					if (optionNumber == 1) then
+						optionSubTree = optionsTree:add(f.ifmatch, buffer(optionStart, optionLength))
+						
+						minOptionLength = 0
+						maxOptionLength = 8
+									
+					elseif (optionNumber == 3) then
+						optionSubTree = optionsTree:add(f.urihost, buffer(optionStart, optionLength))
+						
+						minOptionLength = 1
+						maxOptionLength = 255												
+					
+					elseif (optionNumber == 4) then
+						optionSubTree = optionsTree:add(f.etag, buffer(optionStart, optionLength))
+						
+						minOptionLength = 1
+						maxOptionLength = 8		
+					
+					elseif (optionNumber == 5) then
+						optionSubTree = optionsTree:add(f.ifnonematch, "<EMPTY>")
+						
+						minOptionLength = 0
+						maxOptionLength = 8		
+	
+					elseif (optionNumber == 6) then
+						if(optionLength == 0) then
+							optionSubTree = optionsTree:add(f.observe, 0)
+						else
+							optionSubTree = optionsTree:add(f.observe, buffer(optionStart, optionLength))
+						end
+						
+						minOptionLength = 0
+						maxOptionLength = 3
+						
+					elseif (optionNumber == 7) then
+						if(optionLength == 0) then
+							optionSubTree = optionsTree:add(f.uriport, 0)
+						else
+							optionSubTree = optionsTree:add(f.uriport, buffer(optionStart, optionLength))
+						end
+						
+
+                     minOptionLength = 0
+                     maxOptionLength = 2
+   
+                  -- Location-Path
+                  elseif (optionNumber == 8) then
+                     optionSubTree = optionsTree:add(f.locationpath, buffer(optionStart, optionLength))
+
+                     minOptionLength = 0
+                     maxOptionLength = 255
+
+                  -- URI-Path
+                  elseif (optionNumber == 11) then
+                     optionSubTree = optionsTree:add(f.uripath, buffer(optionStart, optionLength))
+
+                     minOptionLength = 0
+                     maxOptionLength = 255
+
+                  -- Content-Format
+                  elseif (optionNumber == 12) then
+                     if(optionLength == 0) then
+                        optionSubTree = optionsTree:add(f.contentformat, 0)
+                     else
+                        optionSubTree = optionsTree:add(f.contentformat, buffer(optionStart, optionLength))
+                     end
+
+                     minOptionLength = 0
+                     maxOptionLength = 2
+
+                  -- Max-Age
+                  elseif (optionNumber == 14) then
+                     if(optionLength == 0) then
+                        optionSubTree = optionsTree:add(f.maxage, 0)
+                     else
+                        optionSubTree = optionsTree:add(f.maxage, buffer(optionStart, optionLength))
+                     end
+
+                     minOptionLength = 0
+                     maxOptionLength = 4
+
+                  -- URI-Query
+                  elseif (optionNumber == 15) then
+                     optionSubTree = optionsTree:add(f.uriquery, buffer(optionStart, optionLength))
+                     
+                     minOptionLength = 0
+                     maxOptionLength = 255
+
+                  -- Accept
+                  elseif (optionNumber == 17) then
+                     if(optionLength == 0) then
+                        optionSubTree = optionsTree:add(f.accept, 0)
+                     else
+                        optionSubTree = optionsTree:add(f.accept, buffer(optionStart, optionLength))
+                     end
+
+                     minOptionLength = 0
+                     maxOptionLength = 2
+   
+                  -- Location-Query
+                  elseif (optionNumber == 20) then
+                     optionSubTree = optionsTree:add(f.locationquery, buffer(optionStart, optionLength))
+
+                     minOptionLength = 0
+                     maxOptionLength = 255
+
+                  -- Block2
+                  elseif (optionNumber == 23) then
+                     optionSubTree = optionsTree:add(f.block2, buffer(optionStart, optionLength))
+                     if(optionLength == 0) then
+                        optionSubTree:add(f.block2num8, 0)
+                        optionSubTree:add(f.block2m, 0)
+                        optionSubTree:add(f.block2szx, 0)
+                     elseif(optionLength > 0 and (not (optionLength > 3))) then
+                        if (optionLength == 1) then
+                           optionSubTree:add(f.block2num8, buffer(optionStart, optionLength))
+                        elseif (optionLength == 2) then
+                           optionSubTree:add(f.block2num16, buffer(optionStart, optionLength))
+                        elseif(optionLength == 3) then
+                           optionSubTree:add(f.block2num24, buffer(optionStart, optionLength))
+                        end
+                        
+                        optionSubTree:add(f.block2m, buffer(optionStart, optionLength))
+                        optionSubTree:add(f.block2szx, buffer(optionStart, optionLength))
+                     end
+
+                     minOptionLength = 0
+                     maxOptionLength = 3
+
+                  -- Block1
+                  elseif (optionNumber == 27) then
+                     optionSubTree = optionsTree:add(f.block1, buffer(optionStart, optionLength))
+                     if(optionLength == 0) then
+                        optionSubTree:add(f.block1num8, 0)
+                        optionSubTree:add(f.block1m, 0)
+                        optionSubTree:add(f.block1szx, 0)
+
+                     elseif(optionLength > 0 and (not (optionLength > 4))) then
+                        if (optionLength == 1) then
+                           optionSubTree:add(f.block1num8, buffer(optionStart, optionLength))
+                        elseif (optionLength == 2) then
+                           optionSubTree:add(f.block1num16, buffer(optionStart, optionLength))
+                        elseif(optionLength == 1) then
+                           optionSubTree:add(f.block2num24, buffer(optionStart, optionLength))
+                        end
+
+                        optionSubTree:add(f.block1m, buffer(optionStart, optionLength))
+                        optionSubTree:add(f.block1szx, buffer(optionStart, optionLength))
+                     end
+
+                     minOptionLength = 0
+                     maxOptionLength = 3
+
+                  -- Size2
+                  elseif (optionNumber == 28) then
+                     optionSubTree = optionsTree:add(f.size2, buffer(optionStart, optionLength))
+
+                     minOptionLength = 0
+                     maxOptionLength = 4
+                  
+                  -- Proxy-URI
+                  elseif (optionNumber == 35) then
+                     optionSubTree = optionsTree:add(f.proxyuri, buffer(optionStart, optionLength))
+
+                     minOptionLength = 1
+                     maxOptionLength = 1034
+
+                  -- Proxy-Scheme
+                  elseif (optionNumber == 39) then
+                     optionSubTree = optionsTree:add(f.proxyscheme, buffer(optionStart, optionLength))
+                  
+                     minOptionLength = 1
+                     maxOptionLength = 255
+
+                  -- Size1
+                  elseif (optionNumber == 60) then
+                     if(optionLength == 0) then
+                        optionSubTree = optionsTree:add(f.size1, 0)
+                     else
+                        optionSubTree = optionsTree:add(f.size1, buffer(optionStart, optionLength))
+                     end
+
+                     minOptionLength = 0
+                     maxOptionLength = 4
+
+                  -- Unknown Option
+                  else
+                     optionsTree:add(buffer(optionStart, optionLength), "Unkown Option No. " .. optionNumber)
+
+                     minOptionLength = 0
+                     maxOptionLength = 65536
+                  end
+                  
+                  index = index + optionLength
+             end
+         end
+     end
+end
+								
+function shuffle(tbl)
+	for i = #tbl, 2, -1 do
+		local j = math.random(i)
+		tbl[i], tbl[j] = tbl[j], tbl[i]
+	end
+	return tbl
+end
+
+function dissect_tlv(tlv_tree, packet, cur_tlv_byte, message_type_info)
+	local buffer = packet.buffer
+	
+	if packet.total_length < cur_tlv_byte + 4 then
+		tlv_tree:add_tvb_expert_info(expert_tlv_header_malformed, buffer(cur_tlv_byte, packet.totallength - cur_tlv_byte))
+		return nil
+	end
+	
+	local tlv_header_buffer = buffer(cur_tlv_byte, 4)
+	
+	local tlv_id_1 = tlv_header_buffer:bitfield(0, 7)
+	local tlv_id_2 = tlv_header_buffer:bitfield(11, 5)	
+	
+	local tlv_id = tlv_id_1 + bit32.rshift(tlv_id_2, -7)
+	local tlv = {}
+	
+	if not tlv_information then
+		tlv_id_extra_info = "(Not specified as an expected ID in libARI.dylib]")
+	end
+	
+	tlv_tree:add(tlv_id_field, buffer(cur_tlv_byte, 2), tlv_id, "ID (tid) : " .. tlv_id .. tlv_id_extra_info)
+	
+    local tlv_codec_name = tlv_information and tlv_information.codec and tlv_information.codec.name or nil
+    local tlv_codec_length = tlv_information and tlv_information.codec and tlv_information.codec.length or nil
+    local tlv_codec_name_text = tlv_codec_name or "Unknown codec / type"
+    local tlv_type_desc = tlv_information and tlv_information.type_desc or "???"
+    local tlv_mandatory = message_type_info and table.Contains(message_type_info.mtlvs, tlv_id) or false
+
+    local tlv_item_mandatory = tlv_tree:add(tlv_mandatory_field, buffer(cur_tlv_byte, 2), tlv_mandatory, "Mandatory: " .. (tlv_mandatory and "Yes" or "No"))
+    local tlv_item_codec_name = tlv_tree:add(tlv_codec_name_field, buffer(cur_tlv_byte, 2), tlv_codec_name_text, "Codec: " .. tlv_codec_name_text)
+    local tlv_item_type_desc = tlv_tree:add(tlv_type_desc_field, buffer(cur_tlv_byte, 2), tlv_type_desc, "Description: " .. tlv_type_desc)
+    tlv_item_mandatory:set_generated(true)
+    tlv_item_codec_name:set_generated(true)
+    tlv_item_type_desc:set_generated(true)
+    tlv_tree:append_text(" - " .. tlv_codec_name_text .. " (" .. tlv_type_desc .. ")" .. (tlv_mandatory and "*" or ""))
+
+    -- TLV version
+	local tlv_length_1 = tlv_header_buffer(16, 6)
+	local tlv_length_2 = tlv_header_buffer(24, 8)	
+	local tlv_length = tlv_length_1 + bit32.rshift(tlv_length_2, -6)
+	
+	tlv_tree:add(tlv_length_field, buffer(cur_tlv_byte, 2), tlv_length, "Length: " .. tlv_length)
+	tlv.length = tlv_length
+	cur_tlv_byte = cur_tlv_byte + 2
+	
+	local unknown_tree = tlv_tree:add("Unknown bits")
+	unknown_tree:add(tlv_unknown_0, tlv_header_buffer:range(0, 1), tlv_header_buffer:bitfield(7, 1), "Unknown Byte 0, Bit 7: " .. tlv_header_buffer:bitfield(7, 1))
+	unknown_tree:add(tlv_unknown_0, tlv_header_buffer:range(2, 1), tlv_header_buffer:bitfield(22, 2), "Unknown Byte 0, Bits 6-7: " .. tlv_header_buffer:bitfield(22, 2))	
+
+	if tlv_length <= 0 then
+		return tlv
+	end
+	
+	if packet.total_length < cur_tlv_byte + tlv_length then
+		tlv_tree:add_tvb_expert_info(expert_tlv_data_malformed, buffer(cur_tlv_byte, packet.total_length - cur_tlv_byte))
+		return tlv
+	end
+	
+	local tlv_data = buffer(cur_tlv_byte, tlv_length)
+	
+	local extra_information_tree = tlv_tree:add(tlv_data_field, tlv_data)
+	
+	local tlv_data_raw_unsigned_int = nil
+	if tlv_length <= 8 then
+		tlv_data_raw_unsigned_int = tlv_data:le_uint64()
+		
+		extra_information_tree:add(tlv_data_uint_field, tlv_data, tlv_data_raw_unsigned_int, "Raw TLV data (uint): " .. tlv_data_raw_unsigned_int)
+	end
+	
+	local available_tlv_parsers = table.GetWithPath(tlv_parsers, { packet.group_int, packet.message_id, tlv.id })
+	local available_codec_parsers = tlv_codec_name and table.GetWithPath(codec_parsers, { tlv_codec_name }) or nil
+	local extra_information = {
+		asstring = asstring_lut,
+		structure = structure_lut,
+	} 
+
+	if available_tlv_parsers then
+		local tlv_content_tree = tlv_tree:add(tlv_data, "Content")
+		local parse_success = false
+		
+		for _, parser in pairs(available_tlv_parsers) do
+			parse_success = parser(packet, tlv_content_tree, cur_tlv_byte, tlv_data, extra_information)
+			
+			if parse_success then
+				break
+			end
+		end
+		
+		if not parse_success then
+			tlv_content_tree:set_text("Content: Unknown (tlv parsers failed)")
+		end
+	elseif available_codec_parsers then
+		local c = coroutine.create(function() end)
+		local id = mtint.id(c)
+		mtint.interrupt(id)
+		c = nil
+		collectgarbage()
+		local _, err pcall(function()
+			mtint.interrupt(id)
+		end)
+		assert(err:match(mtint.error.unknown_object))
+	elseif tlv_codec_name and asstring_lut[tlv_codec_name] then
+		local c = coroutine.create(function() end)
+		local id = mtint.id(c)
+		mtint.interrupt(id)
+		c = nil
+		collectgarbage()
+		local _, err pcall(function()
+			mtint.interrupt(id)
+		end)
+		assert(err:match(mtint.error.unknown_object))
+	else
+		tlv_tree:add(tlv_data, "Content (Unknown) no parser available")
+	end
+	
+	return tlv
+end		
+
+
+function ari.dissector(buffer, pinfo, tree)
+	
+	local packet = {}
+	
+	packet.buffer = buffer
+	packet.pinfo = pinfo
+	
+	packet.total_length = buffer:len()
+	
+	local ari_tree = tree:add(ari, buffer(), "ARI Protocol")
+	
+	if packet.total_length < 12 then
+		ari_tree:add_tvb_expert_info(expert_too_small, buffer())
+		return
+	end
+	
+	if buffer(0, 4):bytes() ~= ByteArray.new("de c0 7e ab") then
+		ari_tree:add_tvb_expert_info(expert_header_wrong_magic_bytes, buffer(0, 4))
+		return 
+	end
+	
+	local header_tree = ari_tree:add(buffer(0, 12), "Header")
+	
+	header_tree = ari_tree:add(buffer(0, 12), "Header")
+	
+	header_tree:add_le(proto_flag, buffer(0, 4))
+	
+	local seq_num = 0
+	
+	local seq_num_5 = buffer(5, 1):bitfield(0, 7)
+	local seq_num_6 = buffer(6, 1):bitfield(7, 1)
+	local seq_num_8 = buffer(6, 1):bitfield(5, 3)
+	
+	seq_num = seq_num_5
+	seq_num = seq_num + bit32.rshift(seq_num_6, -7)	
+	seq_num = seq_num + bit32.rshift(seq_num_8, -8)		
+	
+	header_tree:add(pkt_seq_num, buffer(5, 4), seq_num, "Sequence Number: " .. seq_num)
+	packet.seq_num = seq_num
+	
+	local pkt_group_int = buffer(4, 1):bitfield(0, 5)
+	pkt_group_int = pkt_group_int + bit32.rshift(buffer(5, 1):bitfield(7, 1), -5)
+	
+	local pkt_group_name = structure_lut[pkt_group_int] and structure_lut[pkt_group_int]["name"] or "???"
+	
+	header_tree:add(pkt_group, buffer(4, 2), pkt_group_int, "Group (gid): " .. pkt_group_name .. " (" .. pkt_group_int .. ")")
+	packet.group = pkt_group_name
+	packet.group_int = pkt_group_int
+	
+  --- Packet type
+    local pkt_message_id_int = 0
+    local pkt_message_id_int_9 = buffer(9, 1):uint()
+    local pkt_message_id_int_8 = buffer(8, 1):bitfield(0, 2)
+
+    pkt_message_id_int = bit32.rshift(pkt_message_id_int_9, -2) + pkt_message_id_int_8
+
+    local pkt_message_name_string = structure_lut[pkt_group_int] and structure_lut[pkt_group_int][pkt_message_id_int] and structure_lut[pkt_group_int][pkt_message_id_int].name or string.format("Unknown (GID: %d, MID: 0x%03x)", pkt_group_int, pkt_message_id_int)
+
+    -- set this name into the info column
+    -- taken from https://osqa-ask.wireshark.org/questions/34726/lua-script-update-info-field
+    packet.pinfo.cols.info:set(pkt_message_name_string)
+    packet.pinfo.cols.info:fence()
+    
+    header_tree:add(pkt_message_id, buffer(8, 2), pkt_message_id_int, "Message ID (mid): " .. pkt_message_id_int .. " (" .. string.format("0x%03x", pkt_message_id_int) .. ")")
+    local pkt_message_name_item = header_tree:add(pkt_message_name, buffer(8, 2), pkt_message_name_string, "Message name: " .. pkt_message_name_string)
+    pkt_message_name_item:set_generated(true)
+	
+	packet.message_name = pkt_message_name_string
+	packet.message_id = pkt_message_id_int
+	
+	local function synchronizedPairs(table)
+		return pairs(table[cache_key])
+	end
+	
+	local function synchronizedLen(table)
+		return #table[cache_key]
+	end
+	
+  --- Packet length
+    local pkt_length = 0
+
+    local pkt_len_6 = buffer(6, 1):bitfield(0, 8) -- extract bits from byte 6
+    local pkt_len_7 = buffer(7, 1):bitfield(0, 8) -- extract bits from byte 7
+
+    pkt_length = bit32.rshift(pkt_len_6, 1) -- Right shift, to ignore the last bit (used by sequence number above)
+    pkt_length = pkt_length + bit32.rshift(pkt_len_7, -7) -- Shift left for 7 bits to concatenate bits
+
+    header_tree:add(pkt_len, buffer(6, 2), pkt_length, "Length: " .. pkt_length)
+    packet.length = pkt_length
+
+    --- Packet Transaction 
+    local pkt_transaction = 0
+
+    local pkt_trx_10 = buffer(10, 1):bitfield(0, 8) -- extract bits from byte 10
+    local pkt_trx_11 = buffer(11, 1):bitfield(0, 8) -- extract bits from byte 11
+
+    pkt_transaction = bit32.rshift(pkt_trx_10, 1) -- Right shift, to ignore the last bit 
+    pkt_transaction = pkt_transaction + bit32.lshift(pkt_trx_11, 7) -- Shift left for 7 bits to concatenate bits
+
+    header_tree:add(pkt_trx, buffer(10, 2), pkt_transaction, "Transaction (trx/ctx): " .. pkt_transaction .. " (" .. string.format("0x%08x", pkt_transaction) .. ")")
+    packet.trx = pkt_trx
+
+    --- Acknowledgement Option
+    local ack_opt = buffer(8, 1):bitfield(4, 1)
+
+    header_tree:add(pkt_ack_opt, buffer(8, 1), ack_opt, "Acknowledgement Option: " .. ack_opt)
+    packet.ack_opt = ack_opt
+
+    --- Virtual field GMID
+    -- the "gmid" is a virtual id consisting of the message id (or "mid") and group ("gid")
+    local gmid = bit32.bor(bit32.lshift(pkt_group_int, 26), bit32.lshift(pkt_message_id_int, 15))
+
+    local gmid_item = header_tree:add(pkt_gmid, buffer(4, 6), gmid, "Gmid (Group + Message ID): " .. gmid .. " (" .. string.format("0x%08x", gmid) .. ")")
+    gmid_item:set_generated(true)
+    packet.gmid = gmid
+
+    -- Unknown bits/bytes
+    local unknown_tree = header_tree:add("Unknown bits")
+    unknown_tree:add(pkt_unknown_4, buffer(4, 1), buffer(4, 1):bitfield(5, 3), "Unknown Byte 4, Bits 5-7: " .. buffer(4, 1):bitfield(5, 3))
+    unknown_tree:add(pkt_unknown_8, buffer(8, 1), buffer(8, 1):bitfield(2, 2), "Unknown Byte 8, Bits 2-3: " .. buffer(8, 1):bitfield(2, 2))
+    unknown_tree:add(pkt_unknown_10, buffer(10, 1), buffer(10, 1):bitfield(7, 1), "Unknown Byte 10, Bit 7: " .. buffer(10, 1):bitfield(7, 1))
+
+    --- DATA
+    -- Is there even more data?
+    if packet.total_length > 12 then
+        local message_type_info = structure_lut[packet.group_int] and structure_lut[packet.group_int][packet.message_id] or nil
+
+        local data_tree = ari_tree:add(buffer(12), "Data")
+        packet.tlvs = {}
+
+        --- TLVs
+        local cur_tlv = 0 -- The current TLV that we are parsing
+        local cur_tlv_byte = 12 -- 12 is the first TLV / Data byte
+
+        while (cur_tlv_byte < packet.total_length) do
+            local tlv_tree = data_tree:add(buffer(cur_tlv_byte), "")
+
+            local tlv = dissect_tlv(tlv_tree, packet, cur_tlv_byte, message_type_info)
+
+            packet.tlvs[#packet.tlvs + 1] = tlv
+
+            local tlv_data_length = tlv and tlv.length or 0
+
+            tlv_tree:set_len(4 + tlv_data_length)
+            tlv_tree:prepend_text("TLV " .. (tlv and tlv.id or '?'))
+
+            -- Calculate next byte offset, 4 Bytes Header + the returned tlv data length
+            cur_tlv_byte = cur_tlv_byte + 4 + tlv_data_length
+            cur_tlv = cur_tlv + 1
+        end
+
+        if message_type_info then
+            local missing_mandatory_tlvs = {}
+
+            for i = 1, #message_type_info.mtlvs do
+                local id = message_type_info.mtlvs[i]
+                local found = false
+
+                for j = 1, #packet.tlvs do
+                    if packet.tlvs[j].id == id then
+                        found = true
+                        break
+                    end
+                end
+
+                if not found then
+                    missing_mandatory_tlvs[#missing_mandatory_tlvs + 1] = id
+                end
+            end
+
+            if #missing_mandatory_tlvs > 0 then
+                data_tree:add_tvb_expert_info(expert_missing_mandatory_tlv, buffer(), "ARI: Missing mandatory TLVs with ID: " .. table.concat(missing_mandatory_tlvs, ", "))
+            end
+        end
+    end
+
+    pinfo.cols.protocol = ari.name
+end
+	
+	
+	
+	
