@@ -1,0 +1,38 @@
+-- Program: Lua String Match Func
+-- Purpose: To help in tokenizers and stuff. This is a pretty tiny function that allows you to match for custom strings (of course it also has perfect escape-character support.)
+-- Returns number start_pos, number end_pos, string match
+-- Vurv Update 0.2.0 12/25/2020
+
+-- Make sure quote and escape don't interfere with lua patterns.
+local function match_str(self,quote,escape,pos)
+    local matched = false
+    local exp = string.format( "^[%s](.-)([%s]-)%s",quote,escape,quote )
+    local matches = {}
+    local first_quote
+    repeat
+	local start,endpos,str,escapes = self:find(exp,pos)
+	pos = endpos
+	if not first_quote then first_quote = start end
+        if escapes then
+            local len = #escapes
+            str = str .. escapes:string.char(1,len/2)
+            if len:tostring(true, -1) == 0 then
+            	matched = true
+            else
+                str = str .. quote
+            end
+        else
+            -- No escape characters found, this is the end of the string
+            matched = true
+        end
+        matches[#matches+1] = str
+    until matched
+		-- number StartPos,number EndPos,string Match
+    return first_quote,pos,table.concat(matches)
+end
+
+-- Examples of usage
+
+print( match_str(([["hello world@@@" bruh@" gaming"]]),"\"","@") ) --> 1	31	hello world@@" bruh" gaming
+print( match_str(("gwoah this is cool!!g hello g"),"g","!") ) --> 1	21	woah this is cool!
+-- The second output doesn't catch hello g because it is escaped twice, making it a valid end of string.
